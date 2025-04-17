@@ -179,7 +179,7 @@ void HandleClayErrors(Clay_ErrorData errorData) {
 
 Clay_RenderCommandArray CreateLayout(Clay_Context* context, DevToolsTerminal_UI_Data *data) {
     Clay_SetCurrentContext(context);
-    Clay_SetDebugModeEnabled(true);
+    Clay_SetDebugModeEnabled(false);
 
     Clay_SetLayoutDimensions((Clay_Dimensions) {
             .width = static_cast<float>(GetScreenWidth()),
@@ -204,7 +204,7 @@ int main(int argc, char* argv[]) {
     Clay_Raylib_Initialize(1024, 768, "DevToolsTerminal", FLAG_WINDOW_RESIZABLE | FLAG_WINDOW_HIGHDPI | FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT);
 
     Font fonts[1];
-    fonts[FONT_ID_BODY_16] = LoadFontEx("resources/SFMonoRegular.ttf", 48, 0, 400);
+    fonts[FONT_ID_BODY_16] = LoadFontEx("/Users/cadenfinley/Documents/GitHub/DevToolsterminal/src/resources/SFMonoRegular.ttf", 48, 0, 400);
     SetTextureFilter(fonts[FONT_ID_BODY_16].texture, TEXTURE_FILTER_BILINEAR);
 
     uint64_t clayRequiredMemory = Clay_MinMemorySize();
@@ -218,8 +218,8 @@ int main(int argc, char* argv[]) {
     Clay_SetMeasureTextFunction(Raylib_MeasureText, fonts);
 
     // Add welcome message to the terminal
-    DevToolsTerminal_UI_AddOutputLine(&data, titleLine);
-    DevToolsTerminal_UI_AddOutputLine(&data, createdLine);
+    DevToolsTerminal_UI_AddOutputLine(&data, titleLine.c_str());
+    DevToolsTerminal_UI_AddOutputLine(&data, createdLine.c_str());
 
     while (!WindowShouldClose()) {
         // Handle input for the terminal
