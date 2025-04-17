@@ -1,3 +1,5 @@
+#define CLAY_IMPLEMENTATION
+
 #include <iostream>
 #include <string>
 #include <thread>
@@ -12,6 +14,11 @@
 #include <ostream>
 #include <nlohmann/json.hpp>
 #include <future>
+
+#include "clay.h"
+#include "renderers/raylib/clay_renderer_raylib.c"
+#include "ui/dtt-clay-ui.c"
+
 
 #include "include/terminalpassthrough.h"
 #include "include/openaipromptengine.h"
@@ -31,7 +38,6 @@ bool saveOnExit = false;
 bool updateFromGithub = false;
 bool executablesCacheInitialized = false;
 bool completionBrowsingMode = false;
-bool daemonRunning = false;
 
 bool shortcutsEnabled = true;
 bool aliasesEnabled = true;
@@ -39,7 +45,6 @@ bool startCommandsOn = true;
 bool usingChatCache = true;
 bool checkForUpdates = true;
 bool silentCheckForUpdates = true;
-bool usingDaemon = true;
 
 time_t lastUpdateCheckTime = 0;
 int UPDATE_CHECK_INTERVAL = 86400;
@@ -168,8 +173,88 @@ bool shouldCheckForUpdates();
 bool loadUpdateCache();
 void saveUpdateCache(bool updateAvailable, const std::string &latestVersion);
 
+void HandleClayErrors(Clay_ErrorData errorData) {
+    printf("%s", errorData.errorText.chars);
+}
+
+Clay_RenderCommandArray CreateLayout(Clay_Context* context, DevToolsTerminal_UI_Data *data) {
+    Clay_SetCurrentContext(context);
+    Clay_SetDebugModeEnabled(true);
+
+    Clay_SetLayoutDimensions((Clay_Dimensions) {
+            .width = static_cast<float>(GetScreenWidth()),
+            .height = static_cast<float>(GetScreenHeight())
+    });
+    Vector2 mousePosition = GetMousePosition();
+    Vector2 scrollDelta = GetMouseWheelMoveV();
+    Clay_SetPointerState(
+            (Clay_Vector2) { mousePosition.x, mousePosition.y },
+            IsMouseButtonDown(0)
+    );
+    Clay_UpdateScrollContainers(
+            true,
+            (Clay_Vector2) { scrollDelta.x, scrollDelta.y },
+            GetFrameTime()
+    );
+    return DevToolsTerminal_UI_CreateLayout(data);
+}
 
 int main(int argc, char* argv[]) {
+
+    Clay_Raylib_Initialize(1024, 768, "DevToolsTerminal", FLAG_WINDOW_RESIZABLE | FLAG_WINDOW_HIGHDPI | FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT);
+
+    Font fonts[1];
+    fonts[FONT_ID_BODY_16] = LoadFontEx("resources/SFMonoRegular.ttf", 48, 0, 400);
+    SetTextureFilter(fonts[FONT_ID_BODY_16].texture, TEXTURE_FILTER_BILINEAR);
+
+    uint64_t clayRequiredMemory = Clay_MinMemorySize();
+
+    Clay_Arena clayMemoryTop = Clay_CreateArenaWithCapacityAndMemory(clayRequiredMemory, malloc(clayRequiredMemory));
+    Clay_Context *clayContext = Clay_Initialize(clayMemoryTop, (Clay_Dimensions) {
+       .width = static_cast<float>(GetScreenWidth()),
+       .height = static_cast<float>(GetScreenHeight())
+    }, (Clay_ErrorHandler) { HandleClayErrors });
+    DevToolsTerminal_UI_Data data = DevToolsTerminal_UI_Initialize();
+    Clay_SetMeasureTextFunction(Raylib_MeasureText, fonts);
+
+    // Add welcome message to the terminal
+    DevToolsTerminal_UI_AddOutputLine(&data, titleLine);
+    DevToolsTerminal_UI_AddOutputLine(&data, createdLine);
+
+    while (!WindowShouldClose()) {
+        // Handle input for the terminal
+        if (IsKeyPressed(KEY_ENTER)) {
+            DevToolsTerminal_UI_SubmitCommand(&data);
+        }
+        else if (IsKeyPressed(KEY_BACKSPACE)) {
+            DevToolsTerminal_UI_HandleSpecialKey(&data, 8);
+        }
+        else if (IsKeyPressed(KEY_LEFT)) {
+            DevToolsTerminal_UI_HandleSpecialKey(&data, 37);
+        }
+        else if (IsKeyPressed(KEY_RIGHT)) {
+            DevToolsTerminal_UI_HandleSpecialKey(&data, 39);
+        }
+        
+        // Handle text input
+        int key = GetCharPressed();
+        while (key > 0) {
+            if ((key >= 32) && (key <= 125)) {
+                DevToolsTerminal_UI_InputChar(&data, (char)key);
+            }
+            key = GetCharPressed();
+        }
+        
+        Clay_RenderCommandArray renderCommands = CreateLayout(clayContext, &data);
+        BeginDrawing();
+        ClearBackground(BLACK);
+        Clay_Raylib_Render(renderCommands, fonts);
+        EndDrawing();
+    }
+
+    Clay_Raylib_Close();
+
+    return 0;
 
     std::string startupInput;
     struct timeval tv;
@@ -181,10 +266,6 @@ int main(int argc, char* argv[]) {
     if (select(STDIN_FILENO+1, &fds, NULL, NULL, &tv) > 0) {
         std::getline(std::cin, startupInput);
     }
-
-    //if usingDaemon is true
-    // check if daemon is running, if not check if exists if exists then run it, if not exists do nothing
-    daemonRunning = false;
 
     startupCommands = {};
     multiScriptShortcuts = {};
@@ -215,7 +296,6 @@ int main(int argc, char* argv[]) {
         loadPluginsAsync([]() {});
     });
     
-    // the daemon will handle this so the program will just need to load 
     std::future<void> execCacheFuture = std::async(std::launch::async, [&]() {
         if (std::filesystem::exists(DATA_DIRECTORY / "executables_cache.json")) {
             loadExecutableCacheFromDisk();
@@ -237,7 +317,6 @@ int main(int argc, char* argv[]) {
     std::future<void> updateFuture;
     if (checkForUpdates) {
         updateFuture = std::async(std::launch::async, [&]() {
-            // First try to load the cache
             bool cacheLoaded = loadUpdateCache();
             
             if (!cacheLoaded || shouldCheckForUpdates()) {

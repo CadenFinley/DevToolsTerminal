@@ -45,17 +45,72 @@ function(setup_curl_download)
         )
     set(CURL_INCLUDE_DIRS ${CMAKE_BINARY_DIR}/external/curl/install/include PARENT_SCOPE)
     set(CURL_LIBRARIES ${CMAKE_BINARY_DIR}/external/curl/install/lib/${CMAKE_STATIC_LIBRARY_PREFIX}curl${CMAKE_STATIC_LIBRARY_SUFFIX} PARENT_SCOPE)
-    add_library(CURL::libcurl UNKNOWN IMPORTED)
-    set_target_properties(CURL::libcurl PROPERTIES
-        IMPORTED_LOCATION ${CURL_LIBRARIES}
-        INTERFACE_INCLUDE_DIRECTORIES ${CURL_INCLUDE_DIRS})
-    add_dependencies(CURL::libcurl curl_external)
+    
+    # Fix: Don't create the imported target here - it will be created after the external project is built
+    set(CURL_EXTERNAL_BUILT TRUE PARENT_SCOPE)
+endfunction()
+
+# Function to set up raylib download and build
+function(setup_raylib_download)
+    message(STATUS "raylib not found - will download and build from source")
+    ExternalProject_Add(raylib_external
+        GIT_REPOSITORY https://github.com/raysan5/raylib.git
+        GIT_TAG 4.5.0
+        PREFIX ${CMAKE_BINARY_DIR}/external/raylib
+        CMAKE_ARGS
+            -DCMAKE_INSTALL_PREFIX=${CMAKE_BINARY_DIR}/external/raylib/install
+            -DBUILD_SHARED_LIBS=OFF
+            -DUSE_EXTERNAL_GLFW=OFF
+            -DBUILD_EXAMPLES=OFF
+        )
+    set(RAYLIB_INCLUDE_DIRS ${CMAKE_BINARY_DIR}/external/raylib/install/include PARENT_SCOPE)
+    set(RAYLIB_LIBRARIES ${CMAKE_BINARY_DIR}/external/raylib/install/lib/${CMAKE_STATIC_LIBRARY_PREFIX}raylib${CMAKE_STATIC_LIBRARY_SUFFIX} PARENT_SCOPE)
+    
+    # Fix: Don't create the imported target here - it will be created after the external project is built
+    set(RAYLIB_EXTERNAL_BUILT TRUE PARENT_SCOPE)
+    
+    # Additional dependencies needed by raylib on different platforms
+    if(APPLE)
+        find_library(COCOA_LIBRARY Cocoa)
+        find_library(OPENGL_LIBRARY OpenGL)
+        find_library(IOKIT_LIBRARY IOKit)
+        find_library(COREVIDEO_LIBRARY CoreVideo)
+        set(PLATFORM_LIBRARIES ${COCOA_LIBRARY} ${OPENGL_LIBRARY} ${IOKIT_LIBRARY} ${COREVIDEO_LIBRARY} PARENT_SCOPE)
+    elseif(UNIX AND NOT APPLE)
+        find_package(OpenGL REQUIRED)
+        find_package(X11 REQUIRED)
+        set(PLATFORM_LIBRARIES ${OPENGL_LIBRARIES} ${X11_LIBRARIES} pthread dl rt PARENT_SCOPE)
+    endif()
 endfunction()
 
 # Try to find CURL, download if not found
 find_package(CURL QUIET)
 if(NOT CURL_FOUND)
     setup_curl_download()
+    
+    # Create the imported target outside of the function to ensure it exists
+    if(CURL_EXTERNAL_BUILT)
+        add_library(CURL::libcurl STATIC IMPORTED)
+        set_target_properties(CURL::libcurl PROPERTIES
+            IMPORTED_LOCATION "${CURL_LIBRARIES}"
+            INTERFACE_INCLUDE_DIRECTORIES "${CURL_INCLUDE_DIRS}")
+        add_dependencies(CURL::libcurl curl_external)
+    endif()
+endif()
+
+# Try to find raylib, download if not found
+find_package(raylib QUIET)
+if(NOT raylib_FOUND)
+    setup_raylib_download()
+    
+    # Create the imported target outside of the function to ensure it exists
+    if(RAYLIB_EXTERNAL_BUILT)
+        add_library(raylib STATIC IMPORTED)
+        set_target_properties(raylib PROPERTIES
+            IMPORTED_LOCATION "${RAYLIB_LIBRARIES}"
+            INTERFACE_INCLUDE_DIRECTORIES "${RAYLIB_INCLUDE_DIRS}")
+        add_dependencies(raylib raylib_external)
+    endif()
 endif()
 
 find_package(Threads REQUIRED)  # Add this to find pthread library
@@ -71,6 +126,13 @@ set(SOURCE_FILES
 
 # Add the include directories for CURL
 include_directories(${CURL_INCLUDE_DIRS})
+
+# Add the include directories for raylib
+if(raylib_FOUND)
+    include_directories(${RAYLIB_INCLUDE_DIR})
+else()
+    include_directories(${RAYLIB_INCLUDE_DIRS})
+endif()
 
 # Find nlohmann_json package (Unix systems only)
 find_path(JSON_INCLUDE_DIR NAMES nlohmann/json.hpp
@@ -98,6 +160,21 @@ endif()
 # Option for static linking (better portability across Linux distributions)
 option(STATIC_LINKING "Link libraries statically for better portability" OFF)
 
+# Platform-specific libraries for raylib
+if(NOT PLATFORM_LIBRARIES)
+    if(APPLE)
+        find_library(COCOA_LIBRARY Cocoa)
+        find_library(OPENGL_LIBRARY OpenGL)
+        find_library(IOKIT_LIBRARY IOKit)
+        find_library(COREVIDEO_LIBRARY CoreVideo)
+        set(PLATFORM_LIBRARIES ${COCOA_LIBRARY} ${OPENGL_LIBRARY} ${IOKIT_LIBRARY} ${COREVIDEO_LIBRARY})
+    elseif(UNIX AND NOT APPLE)
+        find_package(OpenGL REQUIRED)
+        find_package(X11 REQUIRED)
+        set(PLATFORM_LIBRARIES ${OPENGL_LIBRARIES} ${X11_LIBRARIES} pthread dl rt)
+    endif()
+endif()
+
 # Modify the executable target to create platform-specific builds
 if(APPLE)
     # macOS build
@@ -108,6 +185,8 @@ if(APPLE)
     )
     target_link_libraries(DevToolsTerminal_macOS 
         $<IF:$<TARGET_EXISTS:CURL::libcurl>,CURL::libcurl,${CURL_LIBRARIES}>
+        $<IF:$<TARGET_EXISTS:raylib>,raylib,${RAYLIB_LIBRARIES}>
+        ${PLATFORM_LIBRARIES}
         Threads::Threads
     )
 endif()
@@ -120,6 +199,8 @@ set_target_properties(DevToolsTerminal_Linux PROPERTIES
 )
 target_link_libraries(DevToolsTerminal_Linux 
     $<IF:$<TARGET_EXISTS:CURL::libcurl>,CURL::libcurl,${CURL_LIBRARIES}>
+    $<IF:$<TARGET_EXISTS:raylib>,raylib,${RAYLIB_LIBRARIES}>
+    ${PLATFORM_LIBRARIES}
     Threads::Threads
     ${DL_LIBRARY}
 )
